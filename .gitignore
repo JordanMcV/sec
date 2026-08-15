@@ -1,0 +1,7 @@
+sec
+*.o
+*.dSYM/
+_CodeSignature/
+.DS_Store
+_PLAN.md
+_SDD.md
