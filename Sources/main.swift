@@ -106,11 +106,17 @@ func authenticate(reason: String) {
     let context = LAContext()
     context.localizedCancelTitle = "Cancel"
 
+    // .deviceOwnerAuthentication, not .deviceOwnerAuthenticationWithBiometrics.
+    // The biometrics-only policy returns LAError.systemCancel (-4) for a
+    // command line process on macOS 27, because it has no foreground GUI
+    // context to host the dialog. Device owner authentication uses Touch ID
+    // when it can and falls back to the login password, which also keeps the
+    // tool usable over SSH and on headless machines.
     var policyError: NSError?
-    let policy: LAPolicy = .deviceOwnerAuthenticationWithBiometrics
+    let policy: LAPolicy = .deviceOwnerAuthentication
     guard context.canEvaluatePolicy(policy, error: &policyError) else {
-        die("Touch ID unavailable: \(policyError?.localizedDescription ?? "unknown"). "
-            + "Set SEC_SKIP_BIOMETRY=1 to bypass.")
+        let detail = policyError.map { "\($0.localizedDescription) (code \($0.code))" } ?? "unknown"
+        die("authentication unavailable: \(detail). Set SEC_SKIP_BIOMETRY=1 to bypass.")
     }
 
     let semaphore = DispatchSemaphore(value: 0)

@@ -62,9 +62,10 @@ sec list              # names and their variable names, never values
 sec rm komodo-api-key
 ```
 
-## Touch ID
+## Authentication
 
-`sec run` asks for Touch ID before it releases a secret.
+`sec run` authenticates you before it releases a secret. Touch ID handles this
+when it can, and the login password serves as the fallback.
 
 This gate is **advisory**. The Keychain item is a standard generic password and
 is not cryptographically bound to biometry. The prompt proves that a human
@@ -77,12 +78,34 @@ below for the stronger designs and what each one costs.
 
 Set `SEC_SKIP_BIOMETRY=1` to bypass the prompt for scripts and CI.
 
+### Why not biometrics only
+
+`sec` requests `LAPolicy.deviceOwnerAuthentication` rather than
+`.deviceOwnerAuthenticationWithBiometrics`.
+
+The biometrics-only policy does not work from a command line tool. On macOS 27
+`canEvaluatePolicy` rejects it with `LAError.systemCancel` (code -4), even
+though `biometryType` correctly reports Touch ID hardware, the session is Aqua,
+and `bioutil -r` shows an enrolled and active fingerprint. A process with no
+foreground GUI context has nowhere to host the biometric dialog.
+
+Device owner authentication succeeds under the same conditions. It still uses
+Touch ID, so the day to day experience is a fingerprint prompt, and it degrades
+to the login password instead of failing outright.
+
+`LocalAuthentication` needs a GUI session either way. Neither policy works over
+SSH or on a headless machine.
+
 ### Bundle identity
 
-`LocalAuthentication` will not present the Touch ID dialog to a process that has
-no bundle identifier and no code signature. There is no `.app` bundle here, so
-the `Makefile` embeds `Info.plist` into the Mach-O at link time and then signs
-the result. Removing either step breaks the prompt.
+`LocalAuthentication` will not present a dialog to a process that has no bundle
+identifier and no code signature. There is no `.app` bundle here, so the
+`Makefile` embeds `Info.plist` into the Mach-O at link time and signs the
+result. Removing either step breaks the prompt.
+
+Do not set `LSBackgroundOnly` in that `Info.plist`. It declares that the process
+cannot present UI. Use `LSUIElement`, which permits a dialog while keeping the
+tool out of the Dock.
 
 ## Access models
 

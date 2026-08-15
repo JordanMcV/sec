@@ -14,7 +14,7 @@
 	<string>1</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
-	<key>LSBackgroundOnly</key>
+	<key>LSUIElement</key>
 	<true/>
 </dict>
 </plist>
