@@ -2,9 +2,9 @@
 
 Hand a secret to a child process on macOS without ever printing it.
 
-`sec` stores secrets in the login Keychain and injects them into the environment
-of one command. `sec` itself never prints secret values; the command you run
-still controls its own output.
+`sec` stores secrets in the local login Keychain and injects them into the
+environment of one command. `sec` itself never prints secret values; the command
+you run still controls its own output.
 
 ## Why
 
@@ -139,21 +139,25 @@ So the real trade is not "strong or portable". It is this:
 
 | Model | Syncs | Enforced against local code | Cost |
 | --- | --- | --- | --- |
-| Advisory | Yes | No | Free |
-| Access group | Yes | Yes, per team | Apple Developer Team ID |
+| Advisory (current `sec`) | No | No | Free |
+| Access group | When enabled | Yes, per team | Apple Developer Team ID |
 | Secure Enclave | Never | Yes, by hardware | Free, self-signed |
 
-`sec` ships the advisory model today.
+`sec` ships the advisory model today. It does not enable
+`kSecAttrSynchronizable`, so stored secrets stay on this Mac and do not sync
+through iCloud Keychain. The access group and Secure Enclave designs below are
+alternatives, not implemented features.
 
 Sync and hardware sealing are mutually exclusive. Only the access group model
 gives both sync and enforcement, and it is the only model that costs money.
 
 ### Advisory
 
-A standard generic password in the login keychain. The Touch ID prompt is a
-presence check. Any process running as you can read the item directly through
-the Security framework. The protection against transcript leaks comes from the
-tool never printing a value, not from the Keychain.
+A standard generic password in the local login keychain, with no iCloud
+synchronization. The Touch ID prompt is a presence check. Any process running as
+you can read the item directly through the Security framework. The protection
+against transcript leaks comes from the tool never printing a value, not from
+the Keychain.
 
 ### Rejected: legacy keychain ACLs
 
@@ -224,6 +228,7 @@ or on a headless machine.
 ## Limitations
 
 - macOS only. It depends on the Keychain and LocalAuthentication.
+- Local storage only. Secrets do not synchronize between Macs.
 - Secrets must be valid UTF-8 without NUL bytes. Invalid values are rejected
   before storage and again when read for a command.
 - No caching. Every `sec run` prompts. There is no `sudo`-style timeout, because
