@@ -2,6 +2,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -133,6 +134,29 @@ class CLITests(unittest.TestCase):
         result = self.run_cli("list", items={"1key": b"one", "key": b"two"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, b"1key\t(use VAR=name)\nkey\t$KEY\n")
+
+    def test_documented_curl_examples_keep_token_out_of_arguments(self):
+        curl = Path(self.directory.name) / "curl"
+        curl.write_text(
+            '#!/bin/sh\n'
+            'for argument do\n'
+            '  case "$argument" in *"$API_TOKEN"*) exit 91;; esac\n'
+            'done\n'
+            '[ "$1" = "-sS" ] && [ "$2" = "--header" ] && [ "$3" = "@-" ] || exit 92\n'
+            'IFS= read -r header\n'
+            '[ "$header" = "Authorization: Bearer $API_TOKEN" ] || exit 93\n'
+            'printf "header received without token in argv"\n'
+        )
+        curl.chmod(0o755)
+        help_text = self.run_cli("--help").stdout.decode()
+        readme = (ROOT / "README.md").read_text()
+        for text in (readme, help_text):
+            command = re.search(r"sh -c '([^']+)'", text).group(1)
+            result = self.run_cli("run", "api-token", "--", "/bin/sh", "-c", command,
+                                  items={"api-token": b"dummy-token"},
+                                  extra={"PATH": self.directory.name + os.pathsep + os.environ["PATH"]})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, b"header received without token in argv")
 
 
 if __name__ == "__main__":

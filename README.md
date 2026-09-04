@@ -3,13 +3,15 @@
 Hand a secret to a child process on macOS without ever printing it.
 
 `sec` stores secrets in the login Keychain and injects them into the environment
-of one command. No subcommand writes a secret value to stdout.
+of one command. `sec` itself never prints secret values; the command you run
+still controls its own output.
 
 ## Why
 
 Coding agents, CI runners, and terminal scrollback all capture stdout. A tool
-that prints a secret puts that secret into a transcript. A tool that injects it
-into a child process does not.
+that prints a secret puts that secret into a transcript. Injecting it into a
+child process avoids printing it during retrieval. That child must also avoid
+logging the value or putting it in another process's arguments.
 
 The storage backend matters less than the interface. `sec` is built around a
 single rule: print names, never values.
@@ -28,25 +30,27 @@ Store a secret. The value is read from stdin, never from `argv`, because
 arguments are visible to any user through `ps`.
 
 ```sh
-printf %s 'your-api-key' | sec set komodo-api-key
+printf %s 'example-token' | sec set api-token
 ```
 
 Run a command with the secret in its environment:
 
 ```sh
-sec run komodo-api-key -- \
-  sh -c 'curl -sS -H "X-Api-Key: $KOMODO_API_KEY" https://komodo.example/read'
+sec run api-token -- \
+  sh -c 'printf "Authorization: Bearer %s\n" "$API_TOKEN" |
+    curl -sS --header @- https://api.example.com/resource'
 ```
 
-Use single quotes around the inner command. Double quotes make the outer shell
-expand the variable first. That breaks the call and writes the value into shell
-history.
+Use single quotes around the inner command so the child shell expands the
+injected variable. The shell's built-in `printf` passes the header through a
+pipe, and curl reads it from stdin with `--header @-`. Putting the value directly
+in curl's `-H` argument would expose it in process listings.
 
-The variable name is derived from the secret name. `komodo-api-key` becomes
-`KOMODO_API_KEY`. Choose a different name with `VAR=name`:
+The variable name is derived from the secret name. `api-token` becomes
+`API_TOKEN`. Choose a different name with `VAR=name`:
 
 ```sh
-sec run TOKEN=komodo-api-key -- ./deploy.sh
+sec run TOKEN=api-token -- ./deploy.sh
 ```
 
 Environment variable names must match `[A-Za-z_][A-Za-z0-9_]*`. Use an explicit
@@ -57,14 +61,14 @@ For example, `api-key` and `api_key` need distinct aliases when used together.
 Pass several secrets at once:
 
 ```sh
-sec run komodo-api-key komodo-api-secret -- ./publish.sh
+sec run api-token api-secret -- ./publish.sh
 ```
 
 Other commands:
 
 ```sh
 sec list              # names and their variable names, never values
-sec rm komodo-api-key
+sec rm api-token
 ```
 
 ## Authentication
@@ -210,8 +214,8 @@ A signing failure stops installation.
 ### Choosing
 
 If the goal is keeping secrets out of agent transcripts and CI logs, the
-advisory model already achieves it, because the guarantee comes from the
-interface rather than the store.
+advisory model avoids printing values during retrieval. The command receiving
+the secret must also handle it without exposing it in output or arguments.
 
 Choose a stronger model when the threat is other code running as your user.
 Note that a hardware sealed gate has no bypass: Touch ID does not work over SSH
@@ -225,6 +229,12 @@ or on a headless machine.
 - No caching. Every `sec run` prompts. There is no `sudo`-style timeout, because
   a `LAContext` reuse window cannot span separate processes.
 - An advisory gate is not a security boundary against code running as you.
+
+## Development
+
+Run `make test` with Python 3 and the Xcode Command Line Tools installed.
+The CLI regression tests use an in-memory Keychain stub. Build tests compile,
+sign, and install into temporary directories and verify the installed signature.
 
 ## Licence
 

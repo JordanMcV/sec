@@ -14,7 +14,7 @@ func note(_ message: String) {
     FileHandle.standardError.write(Data("\(toolName): \(message)\n".utf8))
 }
 
-// komodo-api-key -> KOMODO_API_KEY
+// api-token -> API_TOKEN
 func defaultVarName(for name: String) -> String {
     let mapped = name.map { c -> Character in
         c.isLetter || c.isNumber ? c : "_"
@@ -266,18 +266,18 @@ USAGE
   \(toolName) rm <name>                        delete a secret
 
 EXAMPLES
-  printf %s 'abc123' | \(toolName) set komodo-api-key
+  printf %s 'example-token' | \(toolName) set api-token
 
-  \(toolName) run komodo-api-key -- \\
-    sh -c 'curl -sS -H "X-Api-Key: $KOMODO_API_KEY" https://komodo/read'
+  \(toolName) run api-token -- \\
+    sh -c 'printf "Authorization: Bearer %s\\n" "$API_TOKEN" |
+      curl -sS --header @- https://api.example.com/resource'
 
   Quote the inner command with single quotes so the child expands the
-  variable. Double quotes make your own shell expand it first, which
-  both breaks the call and leaks the value into shell history.
+  variable. Pipe the header to curl so the value stays out of its arguments.
 
 NOTES
-  No subcommand ever writes a secret to stdout. That is the entire point:
-  stdout is captured by agents, CI logs, and terminal scrollback.
+  sec never prints secret values. The command you run must also avoid
+  exposing them in output or process arguments.
 """
 
 let arguments = Array(CommandLine.arguments.dropFirst())
