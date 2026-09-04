@@ -22,6 +22,10 @@ func defaultVarName(for name: String) -> String {
     return String(mapped).uppercased()
 }
 
+func isValidVariableName(_ name: String) -> Bool {
+    name.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*\z"#, options: .regularExpression) != nil
+}
+
 // MARK: - Keychain
 
 func baseQuery(_ name: String) -> [String: Any] {
@@ -161,6 +165,7 @@ func cmdSet(_ args: [String]) {
         die("usage: \(toolName) set <name>   (secret is read from stdin)")
     }
     let name = args[0]
+    guard !name.isEmpty else { die("secret name cannot be empty") }
 
     if isatty(FileHandle.standardInput.fileDescriptor) == 1 {
         die("refusing to read a secret from a terminal. Pipe it in:\n"
@@ -177,7 +182,9 @@ func cmdSet(_ args: [String]) {
     let secret = Data(bytes)
     _ = environmentValue(for: secret, name: name)
     storeSecret(name: name, secret: secret)
-    note("stored '\(name)' (\(bytes.count) bytes) as $\(defaultVarName(for: name))")
+    let variable = defaultVarName(for: name)
+    let mapping = isValidVariableName(variable) ? "as $\(variable)" : "(use VAR=name with run)"
+    note("stored '\(name)' (\(bytes.count) bytes) \(mapping)")
 }
 
 func cmdRun(_ args: [String]) {
@@ -191,12 +198,25 @@ func cmdRun(_ args: [String]) {
     guard !command.isEmpty else { die("no command given after --") }
 
     var resolved: [(variable: String, name: String)] = []
+    var variables = Set<String>()
     for spec in specs {
-        if let eq = spec.firstIndex(of: "="), eq != spec.startIndex {
-            resolved.append((String(spec[..<eq]), String(spec[spec.index(after: eq)...])))
+        let variable: String
+        let name: String
+        if let eq = spec.firstIndex(of: "=") {
+            variable = String(spec[..<eq])
+            name = String(spec[spec.index(after: eq)...])
         } else {
-            resolved.append((defaultVarName(for: spec), spec))
+            variable = defaultVarName(for: spec)
+            name = spec
         }
+        guard !name.isEmpty else { die("secret name cannot be empty") }
+        guard isValidVariableName(variable) else {
+            die("invalid environment variable '\(variable)'; use VAR=name with a name matching [A-Za-z_][A-Za-z0-9_]*")
+        }
+        guard variables.insert(variable).inserted else {
+            die("duplicate environment variable '\(variable)'; choose distinct names with VAR=name")
+        }
+        resolved.append((variable, name))
     }
 
     let names = resolved.map(\.name).joined(separator: ", ")
@@ -205,7 +225,9 @@ func cmdRun(_ args: [String]) {
     for entry in resolved {
         let secret = loadSecret(name: entry.name)
         let value = environmentValue(for: secret, name: entry.name)
-        setenv(entry.variable, value, 1)
+        guard setenv(entry.variable, value, 1) == 0 else {
+            die("could not set environment variable '\(entry.variable)': \(String(cString: strerror(errno)))")
+        }
     }
 
     // exec replaces this process, so the secret never outlives the child.
@@ -222,7 +244,9 @@ func cmdList() {
         return
     }
     for name in names {
-        print("\(name)\t$\(defaultVarName(for: name))")
+        let variable = defaultVarName(for: name)
+        let mapping = isValidVariableName(variable) ? "$\(variable)" : "(use VAR=name)"
+        print("\(name)\t\(mapping)")
     }
 }
 

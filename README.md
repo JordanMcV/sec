@@ -49,6 +49,11 @@ The variable name is derived from the secret name. `komodo-api-key` becomes
 sec run TOKEN=komodo-api-key -- ./deploy.sh
 ```
 
+Environment variable names must match `[A-Za-z_][A-Za-z0-9_]*`. Use an explicit
+alias for a secret whose derived name does not meet that rule. Secret names
+cannot be empty, and each variable may appear only once in a `run` command.
+For example, `api-key` and `api_key` need distinct aliases when used together.
+
 Pass several secrets at once:
 
 ```sh

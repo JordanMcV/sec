@@ -93,6 +93,47 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, value)
 
+    def test_invalid_mappings_fail_before_authentication(self):
+        for spec in ("", "=key", "TOKEN=", "BAD-NAME=key", "1key", "caf\u00e9", "TOKEN\n=key"):
+            with self.subTest(spec=spec):
+                result = self.run_cli("run", spec, "--", "/usr/bin/printf", "executed")
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn(b"skipping Touch ID", result.stderr)
+                self.assertEqual(result.stdout, b"")
+
+    def test_duplicate_variables_fail_before_authentication(self):
+        for specs in (("api-key", "api_key"), ("TOKEN=first", "TOKEN=second"), ("key", "KEY=key")):
+            with self.subTest(specs=specs):
+                result = self.run_cli("run", *specs, "--", "/usr/bin/printf", "executed")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(b"duplicate environment variable", result.stderr)
+                self.assertNotIn(b"skipping Touch ID", result.stderr)
+                self.assertEqual(result.stdout, b"")
+
+    def test_explicit_aliases_support_arbitrary_nonempty_secret_names(self):
+        result = self.run_cli("run", "FIRST=1key", "_second2=caf\u00e9", "THIRD==key", "--",
+                              "/bin/sh", "-c", 'printf "%s:%s:%s" "$FIRST" "$_second2" "$THIRD"',
+                              items={"1key": b"one", "caf\u00e9": b"two", "=key": b"three"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"one:two:three")
+
+    def test_empty_secret_name_is_not_stored(self):
+        result = self.run_cli("set", "", data=b"value")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(b"TEST ", result.stderr)
+
+    def test_failed_environment_update_does_not_run_command(self):
+        result = self.run_cli("run", "key", "--", "/usr/bin/printf", "executed",
+                              items={"key": b"value"}, extra={"TEST_FAIL_SETENV": "1"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"could not set environment variable 'KEY'", result.stderr)
+        self.assertEqual(result.stdout, b"")
+
+    def test_list_marks_names_that_need_an_alias(self):
+        result = self.run_cli("list", items={"1key": b"one", "key": b"two"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"1key\t(use VAR=name)\nkey\t$KEY\n")
+
 
 if __name__ == "__main__":
     unittest.main()

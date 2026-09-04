@@ -1,5 +1,14 @@
 import Foundation
 import Security
+import Darwin
+
+func setenv(_ name: UnsafePointer<CChar>, _ value: UnsafePointer<CChar>, _ overwrite: Int32) -> Int32 {
+    if ProcessInfo.processInfo.environment["TEST_FAIL_SETENV"] == "1" {
+        errno = ENOMEM
+        return -1
+    }
+    return Darwin.setenv(name, value, overwrite)
+}
 
 private var items: [String: Data] = {
     let json = ProcessInfo.processInfo.environment["TEST_ITEMS"] ?? "{}"
