@@ -1,4 +1,5 @@
 sec
+.build/
 *.o
 *.dSYM/
 _CodeSignature/

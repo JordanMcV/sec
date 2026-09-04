@@ -1,6 +1,9 @@
 PREFIX ?= $(HOME)/.local
 BIN    := sec
 SRC    := Sources/main.swift
+BUILD_DIR := .build
+BUILD_BIN := $(BUILD_DIR)/$(BIN)
+SWIFTFLAGS ?= -O
 
 # LocalAuthentication refuses to show the Touch ID dialog unless the process
 # has a bundle identifier and a code signature. The identifier is embedded
@@ -15,21 +18,25 @@ SIGN_IDENTITY ?= -
 
 all: build
 
-build: $(BIN)
+build: $(BUILD_BIN)
 
-$(BIN): $(SRC) Info.plist
-	swiftc -O -o $(BIN) $(SRC) \
+$(BUILD_BIN): $(SRC) Info.plist
+	mkdir -p "$(BUILD_DIR)"
+	swiftc $(SWIFTFLAGS) -o "$(BUILD_BIN)" $(SRC) \
 		-framework LocalAuthentication -framework Security \
 		$(LDFLAGS)
-	codesign -s "$(SIGN_IDENTITY)" --force $(BIN)
+	codesign -s "$(SIGN_IDENTITY)" --force "$(BUILD_BIN)"
+	codesign --verify --strict "$(BUILD_BIN)"
 
 install: build
-	install -d $(PREFIX)/bin
-	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
+	install -d "$(PREFIX)/bin"
+	install -m 755 "$(BUILD_BIN)" "$(PREFIX)/bin/$(BIN)"
+	codesign --verify --strict "$(PREFIX)/bin/$(BIN)"
 	@echo "installed $(PREFIX)/bin/$(BIN)"
 
 test: build
 	python3 Tests/test_cli.py
+	python3 Tests/test_build.py
 
 clean:
-	rm -f $(BIN)
+	rm -f "$(BUILD_BIN)"
