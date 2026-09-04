@@ -29,12 +29,7 @@ install: build
 	@echo "installed $(PREFIX)/bin/$(BIN)"
 
 test: build
-	@printf %s 'dummy-value-12345' | ./$(BIN) set sec-selftest
-	@SEC_SKIP_BIOMETRY=1 ./$(BIN) run sec-selftest -- \
-		sh -c 'test "$$SEC_SELFTEST" = "dummy-value-12345" && echo "inject: ok"'
-	@SEC_SKIP_BIOMETRY=1 ./$(BIN) run TOKEN=sec-selftest -- \
-		sh -c 'test -n "$$TOKEN" && echo "rename: ok"'
-	@./$(BIN) rm sec-selftest
+	python3 Tests/test_cli.py
 
 clean:
 	rm -f $(BIN)

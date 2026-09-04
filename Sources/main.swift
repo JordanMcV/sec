@@ -34,11 +34,20 @@ func baseQuery(_ name: String) -> [String: Any] {
 
 func storeSecret(name: String, secret: Data) {
     var query = baseQuery(name)
-    SecItemDelete(query as CFDictionary)
+    let attributes = [kSecValueData as String: secret]
+    var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+    if status == errSecSuccess { return }
+    guard status == errSecItemNotFound else {
+        die("could not store '\(name)': \(secErrorMessage(status))")
+    }
+
     query[kSecValueData as String] = secret
     query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
 
-    let status = SecItemAdd(query as CFDictionary, nil)
+    status = SecItemAdd(query as CFDictionary, nil)
+    if status == errSecDuplicateItem {
+        status = SecItemUpdate(baseQuery(name) as CFDictionary, attributes as CFDictionary)
+    }
     guard status == errSecSuccess else {
         die("could not store '\(name)': \(secErrorMessage(status))")
     }
