@@ -146,6 +146,16 @@ func authenticate(reason: String) {
 
 // MARK: - Commands
 
+func environmentValue(for secret: Data, name: String) -> String {
+    guard let value = String(data: secret, encoding: .utf8) else {
+        die("'\(name)' is not valid UTF-8 and cannot be an environment variable")
+    }
+    guard !secret.contains(0) else {
+        die("'\(name)' contains a NUL byte and cannot be an environment variable")
+    }
+    return value
+}
+
 func cmdSet(_ args: [String]) {
     guard args.count == 1 else {
         die("usage: \(toolName) set <name>   (secret is read from stdin)")
@@ -164,7 +174,9 @@ func cmdSet(_ args: [String]) {
     }
     guard !bytes.isEmpty else { die("refusing to store an empty secret") }
 
-    storeSecret(name: name, secret: Data(bytes))
+    let secret = Data(bytes)
+    _ = environmentValue(for: secret, name: name)
+    storeSecret(name: name, secret: secret)
     note("stored '\(name)' (\(bytes.count) bytes) as $\(defaultVarName(for: name))")
 }
 
@@ -192,9 +204,7 @@ func cmdRun(_ args: [String]) {
 
     for entry in resolved {
         let secret = loadSecret(name: entry.name)
-        guard let value = String(data: secret, encoding: .utf8) else {
-            die("'\(entry.name)' is not valid UTF-8 and cannot be an environment variable")
-        }
+        let value = environmentValue(for: secret, name: entry.name)
         setenv(entry.variable, value, 1)
     }
 

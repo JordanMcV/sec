@@ -67,6 +67,32 @@ class CLITests(unittest.TestCase):
         self.assertIn(b"TEST updated key=bmV3", result.stderr)
         self.assertNotIn(b"TEST deleted", result.stderr)
 
+    def test_invalid_values_are_rejected_before_storage(self):
+        for value in (b"\xff", b"first\0second", b"\0first", b"first\0"):
+            with self.subTest(value=value):
+                result = self.run_cli("set", "key", items={"key": b"old"}, data=value)
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn(b"TEST ", result.stderr)
+                self.assertEqual(result.stdout, b"")
+
+    def test_invalid_stored_values_do_not_run_command(self):
+        for value in (b"\xff", b"first\0second", b"\0first", b"first\0"):
+            with self.subTest(value=value):
+                result = self.run_cli("run", "key", "--", "/usr/bin/printf", "executed",
+                                      items={"key": value})
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, b"")
+
+    def test_unicode_and_multiline_values_are_preserved(self):
+        value = "caf\u00e9\nsecond line".encode()
+        stored = self.run_cli("set", "key", data=value)
+        self.assertEqual(stored.returncode, 0, stored.stderr)
+        self.assertIn(base64.b64encode(value), stored.stderr)
+        result = self.run_cli("run", "key", "--", "/bin/sh", "-c", 'printf "%s" "$KEY"',
+                              items={"key": value})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, value)
+
 
 if __name__ == "__main__":
     unittest.main()

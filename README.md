@@ -211,7 +211,8 @@ or on a headless machine.
 ## Limitations
 
 - macOS only. It depends on the Keychain and LocalAuthentication.
-- Secrets must be valid UTF-8, because environment variables are strings.
+- Secrets must be valid UTF-8 without NUL bytes. Invalid values are rejected
+  before storage and again when read for a command.
 - No caching. Every `sec run` prompts. There is no `sudo`-style timeout, because
   a `LAContext` reuse window cannot span separate processes.
 - An advisory gate is not a security boundary against code running as you.
