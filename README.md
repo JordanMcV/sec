@@ -203,6 +203,10 @@ every rebuild and orphans anything bound to the previous identity. Create a
 self-signed code signing certificate in Keychain Access and build with
 `make SIGN_IDENTITY="your-cert-name"`.
 
+Signing runs on every build or install, even when the executable is already up
+to date. Use `make sign SIGN_IDENTITY="your-cert-name"` to re-sign it explicitly.
+A signing failure stops installation.
+
 ### Choosing
 
 If the goal is keeping secrets out of agent transcripts and CI logs, the

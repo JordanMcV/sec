@@ -18,13 +18,15 @@ SIGN_IDENTITY ?= -
 
 all: build
 
-build: $(BUILD_BIN)
+build: sign
 
-$(BUILD_BIN): $(SRC) Info.plist
+$(BUILD_BIN): $(SRC) Info.plist Makefile
 	mkdir -p "$(BUILD_DIR)"
 	swiftc $(SWIFTFLAGS) -o "$(BUILD_BIN)" $(SRC) \
 		-framework LocalAuthentication -framework Security \
 		$(LDFLAGS)
+
+sign: $(BUILD_BIN)
 	codesign -s "$(SIGN_IDENTITY)" --force "$(BUILD_BIN)"
 	codesign --verify --strict "$(BUILD_BIN)"
 
