@@ -25,15 +25,13 @@ export PATH="$HOME/.local/bin:$PATH"
 sec init
 ```
 
-Setup generates and verifies a key on your Mac. No Apple Developer account or
-personal signing certificate is needed. Running `sec init` again verifies the
+Setup generates and verifies a key on your Mac. Running `sec init` again verifies the
 existing key; it never replaces it.
 
 ## Use
 
 Store a credential by piping it from a trusted source, such as your password
-manager. `sec set` reads stdin, not a command-line argument. This is a dummy
-example; don't type real credentials into shell history:
+manager. `sec set` reads stdin, not a command-line argument:
 
 ```sh
 printf %s 'example-token' | sec set api-token
@@ -92,23 +90,6 @@ source. To start over, remove the encrypted entries with `sec rm`, delete the
 `default` entry with service `sec.enclave-key.v1` in Keychain Access, then run
 `sec init` and re-import. This discards the old encrypted storage; it does not
 recover it.
-
-## Upgrading from the older Keychain backend
-
-Old entries are not silently read or converted:
-
-```sh
-sec init
-sec list
-sec migrate api-token api-secret
-```
-
-Migration encrypts and verifies each copy without overwriting a conflicting
-encrypted entry. **The old copies remain unprotected by Touch ID.** After testing
-your commands, remove their entries with service **`sec`** in Keychain Access.
-Do not remove **`sec.enclave-key.v1`** (your encryption key) or
-**`sec.encrypted.v1`** (your encrypted credentials). `sec list` flags remaining
-legacy copies; `sec rm` only removes encrypted entries.
 
 ## Development
 
