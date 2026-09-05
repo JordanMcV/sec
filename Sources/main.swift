@@ -1,12 +1,10 @@
 import Foundation
-import LocalAuthentication
-import Security
 
-let keychainService = "sec"
 let toolName = "sec"
+let vault = Vault()
 
 func die(_ message: String) -> Never {
-    FileHandle.standardError.write(Data("\(toolName): \(message)\n".utf8))
+    note(message)
     exit(1)
 }
 
@@ -14,188 +12,58 @@ func note(_ message: String) {
     FileHandle.standardError.write(Data("\(toolName): \(message)\n".utf8))
 }
 
-// api-token -> API_TOKEN
 func defaultVarName(for name: String) -> String {
-    let mapped = name.map { c -> Character in
-        c.isLetter || c.isNumber ? c : "_"
-    }
-    return String(mapped).uppercased()
+    String(name.map { $0.isLetter || $0.isNumber ? $0 : "_" }).uppercased()
 }
 
 func isValidVariableName(_ name: String) -> Bool {
     name.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*\z"#, options: .regularExpression) != nil
 }
 
-// MARK: - Keychain
-
-func baseQuery(_ name: String) -> [String: Any] {
-    [
-        kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: keychainService,
-        kSecAttrAccount as String: name,
-    ]
-}
-
-func storeSecret(name: String, secret: Data) {
-    var query = baseQuery(name)
-    let attributes = [kSecValueData as String: secret]
-    var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-    if status == errSecSuccess { return }
-    guard status == errSecItemNotFound else {
-        die("could not store '\(name)': \(secErrorMessage(status))")
-    }
-
-    query[kSecValueData as String] = secret
-    query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
-
-    status = SecItemAdd(query as CFDictionary, nil)
-    if status == errSecDuplicateItem {
-        status = SecItemUpdate(baseQuery(name) as CFDictionary, attributes as CFDictionary)
-    }
-    guard status == errSecSuccess else {
-        die("could not store '\(name)': \(secErrorMessage(status))")
-    }
-}
-
-func loadSecret(name: String) -> Data {
-    var query = baseQuery(name)
-    query[kSecReturnData as String] = true
-    query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-    var item: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &item)
-    if status == errSecItemNotFound {
-        die("no secret named '\(name)'. Store one with: \(toolName) set \(name)")
-    }
-    guard status == errSecSuccess, let data = item as? Data else {
-        die("could not read '\(name)': \(secErrorMessage(status))")
-    }
-    return data
-}
-
-func deleteSecret(name: String) {
-    let status = SecItemDelete(baseQuery(name) as CFDictionary)
-    if status == errSecItemNotFound {
-        die("no secret named '\(name)'")
-    }
-    guard status == errSecSuccess else {
-        die("could not delete '\(name)': \(secErrorMessage(status))")
-    }
-}
-
-func listSecretNames() -> [String] {
-    var query: [String: Any] = [
-        kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: keychainService,
-        kSecMatchLimit as String: kSecMatchLimitAll,
-        kSecReturnAttributes as String: true,
-    ]
-    query[kSecReturnData as String] = false
-
-    var items: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &items)
-    if status == errSecItemNotFound { return [] }
-    guard status == errSecSuccess, let entries = items as? [[String: Any]] else {
-        die("could not list secrets: \(secErrorMessage(status))")
-    }
-    return entries.compactMap { $0[kSecAttrAccount as String] as? String }.sorted()
-}
-
-func secErrorMessage(_ status: OSStatus) -> String {
-    (SecCopyErrorMessageString(status, nil) as String?) ?? "OSStatus \(status)"
-}
-
-// MARK: - Biometrics
-
-// Advisory gate. The Keychain item is not cryptographically bound to biometry,
-// so this proves a human approved the read; it does not stop another process
-// running as this user from reading the item directly.
-func authenticate(reason: String) {
-    if ProcessInfo.processInfo.environment["SEC_SKIP_BIOMETRY"] == "1" {
-        note("SEC_SKIP_BIOMETRY=1 set, skipping Touch ID")
-        return
-    }
-
-    let context = LAContext()
-    context.localizedCancelTitle = "Cancel"
-
-    // .deviceOwnerAuthentication, not .deviceOwnerAuthenticationWithBiometrics.
-    // The biometrics-only policy returns LAError.systemCancel (-4) for a
-    // command line process on macOS 27, because it has no foreground GUI
-    // context to host the dialog. Device owner authentication uses Touch ID
-    // when it can and falls back to the login password, which also keeps the
-    // tool usable over SSH and on headless machines.
-    var policyError: NSError?
-    let policy: LAPolicy = .deviceOwnerAuthentication
-    guard context.canEvaluatePolicy(policy, error: &policyError) else {
-        let detail = policyError.map { "\($0.localizedDescription) (code \($0.code))" } ?? "unknown"
-        die("authentication unavailable: \(detail). Set SEC_SKIP_BIOMETRY=1 to bypass.")
-    }
-
-    let semaphore = DispatchSemaphore(value: 0)
-    var granted = false
-    var failure: Error?
-
-    context.evaluatePolicy(policy, localizedReason: reason) { success, error in
-        granted = success
-        failure = error
-        semaphore.signal()
-    }
-    semaphore.wait()
-
-    guard granted else {
-        die("authentication failed: \(failure?.localizedDescription ?? "denied")")
-    }
-}
-
-// MARK: - Commands
-
-func environmentValue(for secret: Data, name: String) -> String {
+func environmentValue(for secret: Data, name: String) throws -> String {
     guard let value = String(data: secret, encoding: .utf8) else {
-        die("'\(name)' is not valid UTF-8 and cannot be an environment variable")
+        throw SecError("'\(name)' is not valid UTF-8 and cannot be an environment variable")
     }
     guard !secret.contains(0) else {
-        die("'\(name)' contains a NUL byte and cannot be an environment variable")
+        throw SecError("'\(name)' contains a NUL byte and cannot be an environment variable")
     }
     return value
 }
 
-func cmdSet(_ args: [String]) {
-    guard args.count == 1 else {
-        die("usage: \(toolName) set <name>   (secret is read from stdin)")
+func cmdSet(_ args: [String]) throws {
+    guard args.count == 1, !args[0].isEmpty else {
+        throw SecError("usage: sec set <name>   (nonempty name; secret is read from stdin)")
     }
     let name = args[0]
-    guard !name.isEmpty else { die("secret name cannot be empty") }
-
     if isatty(FileHandle.standardInput.fileDescriptor) == 1 {
-        die("refusing to read a secret from a terminal. Pipe it in:\n"
-            + "  printf %s 'VALUE' | \(toolName) set \(name)")
+        throw SecError("refusing to read a secret from a terminal. Pipe it in from your password manager or another trusted source.")
     }
-
-    let data = FileHandle.standardInput.readDataToEndOfFile()
-    var bytes = [UInt8](data)
-    while let last = bytes.last, last == 0x0A || last == 0x0D {
-        bytes.removeLast()
-    }
-    guard !bytes.isEmpty else { die("refusing to store an empty secret") }
-
+    var bytes = [UInt8](FileHandle.standardInput.readDataToEndOfFile())
+    while let last = bytes.last, last == 0x0A || last == 0x0D { bytes.removeLast() }
+    guard !bytes.isEmpty else { throw SecError("refusing to store an empty secret") }
     let secret = Data(bytes)
-    _ = environmentValue(for: secret, name: name)
-    storeSecret(name: name, secret: secret)
-    let variable = defaultVarName(for: name)
-    let mapping = isValidVariableName(variable) ? "as $\(variable)" : "(use VAR=name with run)"
-    note("stored '\(name)' (\(bytes.count) bytes) \(mapping)")
+    _ = try environmentValue(for: secret, name: name)
+    let key = try vault.loadKey(reason: "verify and store '\(name)' with sec")
+    let encrypted = try SealedSecret.seal(secret, name: name, publicKey: key.publicKey)
+    let sealed = try SealedSecret.decode(encrypted, publicKey: key.publicKey)
+    guard try key.open(sealed, name: name) == secret else {
+        throw SecError("encryption verification failed; existing entry was not changed")
+    }
+    try vault.secrets.store(name, data: encrypted)
+    note("stored '\(name)' encrypted")
+    if try vault.legacy.names().contains(name) {
+        note("an old unprotected copy of '\(name)' still exists under service 'sec' in Keychain Access")
+    }
 }
 
-func cmdRun(_ args: [String]) {
+func cmdRun(_ args: [String]) throws {
     guard let separator = args.firstIndex(of: "--") else {
-        die("usage: \(toolName) run <name|VAR=name>... -- <command> [args...]")
+        throw SecError("usage: sec run <name|VAR=name>... -- <command> [args...]")
     }
     let specs = Array(args[..<separator])
     let command = Array(args[(separator + 1)...])
-
-    guard !specs.isEmpty else { die("name at least one secret before --") }
-    guard !command.isEmpty else { die("no command given after --") }
+    guard !specs.isEmpty else { throw SecError("name at least one secret before --") }
+    guard !command.isEmpty, !command[0].isEmpty else { throw SecError("no command given after --") }
 
     var resolved: [(variable: String, name: String)] = []
     var variables = Set<String>()
@@ -209,89 +77,102 @@ func cmdRun(_ args: [String]) {
             variable = defaultVarName(for: spec)
             name = spec
         }
-        guard !name.isEmpty else { die("secret name cannot be empty") }
+        guard !name.isEmpty else { throw SecError("secret name cannot be empty") }
         guard isValidVariableName(variable) else {
-            die("invalid environment variable '\(variable)'; use VAR=name with a name matching [A-Za-z_][A-Za-z0-9_]*")
+            throw SecError("invalid environment variable '\(variable)'; use VAR=name with a name matching [A-Za-z_][A-Za-z0-9_]*")
         }
         guard variables.insert(variable).inserted else {
-            die("duplicate environment variable '\(variable)'; choose distinct names with VAR=name")
+            throw SecError("duplicate environment variable '\(variable)'; choose distinct names with VAR=name")
         }
         resolved.append((variable, name))
     }
 
-    let names = resolved.map(\.name).joined(separator: ", ")
-    authenticate(reason: "release \(names) to \(command[0])")
-
-    for entry in resolved {
-        let secret = loadSecret(name: entry.name)
-        let value = environmentValue(for: secret, name: entry.name)
+    // Read and validate every envelope before a private-key operation can prompt.
+    let encrypted = try resolved.map { try vault.read($0.name) }
+    let key = try vault.loadKey(reason: "release \(resolved.map(\.name).joined(separator: ", ")) to \(command[0])")
+    let sealed = try encrypted.map { try SealedSecret.decode($0, publicKey: key.publicKey) }
+    var values: [String] = []
+    for (entry, record) in zip(resolved, sealed) {
+        values.append(try environmentValue(for: key.open(record, name: entry.name), name: entry.name))
+    }
+    for (entry, value) in zip(resolved, values) {
         guard setenv(entry.variable, value, 1) == 0 else {
-            die("could not set environment variable '\(entry.variable)': \(String(cString: strerror(errno)))")
+            throw SecError("could not set environment variable '\(entry.variable)': \(String(cString: strerror(errno)))")
         }
     }
 
-    // exec replaces this process, so the secret never outlives the child.
     let argv: [UnsafeMutablePointer<CChar>?] = command.map { strdup($0) } + [nil]
     execvp(command[0], argv)
-
-    die("could not exec '\(command[0])': \(String(cString: strerror(errno)))")
+    throw SecError("could not exec '\(command[0])': \(String(cString: strerror(errno)))")
 }
 
-func cmdList() {
-    let names = listSecretNames()
-    if names.isEmpty {
-        note("no secrets stored")
-        return
-    }
+func cmdList() throws {
+    let encrypted = Set(try vault.secrets.names())
+    let legacy = Set(try vault.legacy.names())
+    let names = encrypted.union(legacy).sorted()
+    if names.isEmpty { note("no secrets stored"); return }
     for name in names {
         let variable = defaultVarName(for: name)
         let mapping = isValidVariableName(variable) ? "$\(variable)" : "(use VAR=name)"
-        print("\(name)\t\(mapping)")
+        let status = !encrypted.contains(name) ? "\tlegacy: migration required" : legacy.contains(name) ? "\tlegacy copy remains" : ""
+        print("\(name)\t\(mapping)\(status)")
     }
 }
 
-func cmdRemove(_ args: [String]) {
-    guard args.count == 1 else { die("usage: \(toolName) rm <name>") }
-    deleteSecret(name: args[0])
-    note("deleted '\(args[0])'")
-}
-
 let usage = """
-\(toolName) - hand secrets to a child process without printing them
+sec - release encrypted secrets to a command with Touch ID
 
 USAGE
-  \(toolName) set <name>                       store a secret read from stdin
-  \(toolName) run <name|VAR=name>... -- <cmd>  Touch ID, inject, exec
-  \(toolName) list                             list names (never values)
-  \(toolName) rm <name>                        delete a secret
+  sec init                              initialize this Mac's encryption key
+  sec set <name>                        encrypt and verify a secret from stdin
+  sec run <name|VAR=name>... -- <cmd>     Touch ID, decrypt, inject, exec
+  sec list                              list names, never values
+  sec rm <name>                         delete an encrypted secret
+  sec migrate <name>...                  copy and verify legacy entries
 
 EXAMPLES
-  printf %s 'example-token' | \(toolName) set api-token
-
-  \(toolName) run api-token -- \\
+  sec init
+  printf %s 'example-token' | sec set api-token
+  sec run TOKEN=api-token -- ./deploy.sh
+  sec run api-token -- \\
     sh -c 'printf "Authorization: Bearer %s\\n" "$API_TOKEN" |
       curl -sS --header @- https://api.example.com/resource'
 
-  Quote the inner command with single quotes so the child expands the
-  variable. Pipe the header to curl so the value stays out of its arguments.
-
 NOTES
-  sec never prints secret values. The command you run must also avoid
-  exposing them in output or process arguments.
+  Requires macOS 14+, Secure Enclave, and enrolled Touch ID. No password
+  fallback or biometric bypass. Keep recovery copies of your credentials:
+  changing fingerprints or losing this Mac's key can make them unrecoverable.
+  sec never prints values; your command must also avoid exposing them.
+  Migration keeps legacy copies; remove those separately in Keychain Access.
 """
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-guard let subcommand = arguments.first else {
-    print(usage)
-    exit(0)
-}
+let subcommand = arguments.first ?? "--help"
 let rest = Array(arguments.dropFirst())
-
-switch subcommand {
-case "set": cmdSet(rest)
-case "run": cmdRun(rest)
-case "list", "ls": cmdList()
-case "rm", "delete": cmdRemove(rest)
-case "-h", "--help", "help": print(usage)
-default: die("unknown command '\(subcommand)'. Run '\(toolName) --help'.")
+do {
+    switch subcommand {
+    case "init":
+        guard rest.isEmpty else { throw SecError("usage: sec init") }
+        try vault.initialize()
+    case "set": try cmdSet(rest)
+    case "run": try cmdRun(rest)
+    case "list", "ls":
+        guard rest.isEmpty else { throw SecError("usage: sec list") }
+        try cmdList()
+    case "rm", "delete":
+        guard rest.count == 1, !rest[0].isEmpty else { throw SecError("usage: sec rm <name>") }
+        try vault.secrets.remove(rest[0])
+        note("deleted encrypted '\(rest[0])'")
+        if try vault.legacy.names().contains(rest[0]) { note("legacy copy remains under service 'sec' in Keychain Access") }
+    case "migrate":
+        guard !rest.isEmpty, rest.allSatisfy({ !$0.isEmpty }) else { throw SecError("usage: sec migrate <name>...") }
+        try vault.migrate(rest)
+    case "-h", "--help", "help": print(usage)
+    default: throw SecError("unknown command '\(subcommand)'. Run 'sec --help'.")
+    }
+} catch let error as SecError {
+    die(error.description)
+} catch {
+    // Avoid dumping crypto objects or stored bytes through error descriptions.
+    die("operation failed (\((error as NSError).code)); no command was launched")
 }

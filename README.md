@@ -1,39 +1,61 @@
 # sec
 
-Hand a secret to a child process on macOS without ever printing it.
-
-`sec` stores secrets in the local login Keychain and injects them into the
-environment of one command. `sec` itself never prints secret values; the command
-you run still controls its own output.
-
-## Why
-
-Coding agents, CI runners, and terminal scrollback all capture stdout. A tool
-that prints a secret puts that secret into a transcript. Injecting it into a
-child process avoids printing it during retrieval. That child must also avoid
-logging the value or putting it in another process's arguments.
-
-The storage backend matters less than the interface. `sec` is built around a
-single rule: print names, never values.
+Give a command access to your secrets without printing them in your terminal or
+agent transcript. `sec` encrypts credentials locally and requires Touch ID to
+decrypt them into a child process's environment.
 
 ## Install
 
-Requires macOS and the Xcode Command Line Tools.
+Requires **macOS 14 or later**, a Mac with **Secure Enclave and enrolled Touch ID**,
+and the Xcode Command Line Tools. Use a local graphical login session; SSH,
+headless machines, and unattended CI are not supported for secret retrieval.
 
 ```sh
-make install          # builds and installs to ~/.local/bin/sec
+xcode-select --install  # if the Command Line Tools are not already installed
+git clone https://github.com/JordanMcV/sec.git
+cd sec
+make install
 ```
+
+The executable is installed to `~/.local/bin`. Add that directory to your shell's
+`PATH` if necessary, then initialize your encryption key:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+sec init
+```
+
+Setup generates and verifies a key on your Mac. No Apple Developer account or
+personal signing certificate is needed. Running `sec init` again verifies the
+existing key; it never replaces it.
 
 ## Use
 
-Store a secret. The value is read from stdin, never from `argv`, because
-arguments are visible to any user through `ps`.
+Store a credential by piping it from a trusted source, such as your password
+manager. `sec set` reads stdin, not a command-line argument. This is a dummy
+example; don't type real credentials into shell history:
 
 ```sh
 printf %s 'example-token' | sec set api-token
 ```
 
-Run a command with the secret in its environment:
+Run a command with the credential in its environment:
+
+```sh
+sec run api-token -- ./deploy.sh               # sets API_TOKEN
+sec run TOKEN=api-token -- ./deploy.sh         # explicit variable name
+sec run api-token api-secret -- ./deploy.sh    # multiple credentials
+sec list                                      # names only
+sec rm api-token                              # delete an encrypted entry
+```
+
+Approve Touch ID when prompted. `sec` decrypts the requested entries and replaces
+itself with your command. Each invocation starts a fresh authentication context.
+`set` also asks for Touch ID to verify that new ciphertext can be decrypted
+before saving it. `list` and `rm` do not decrypt values.
+
+For curl, pass the credential through stdin so it doesn't appear in curl's
+process arguments:
 
 ```sh
 sec run api-token -- \
@@ -41,206 +63,61 @@ sec run api-token -- \
     curl -sS --header @- https://api.example.com/resource'
 ```
 
-Use single quotes around the inner command so the child shell expands the
-injected variable. The shell's built-in `printf` passes the header through a
-pipe, and curl reads it from stdin with `--header @-`. Putting the value directly
-in curl's `-H` argument would expose it in process listings.
+Use single quotes around the child shell command so it expands the variable
+after `sec` injects it. Your command must not log or print the credential.
 
-The variable name is derived from the secret name. `api-token` becomes
-`API_TOKEN`. Choose a different name with `VAR=name`:
+Names such as `api-token` become `API_TOKEN`. Use `VAR=name` if the derived name
+isn't a valid environment variable, or if two names would collide. Values must
+be UTF-8 text without NUL bytes; trailing CR/LF characters are stripped on input.
+
+## Security and recovery
+
+- Credentials are encrypted with CryptoKit HPKE (P-256, HKDF-SHA256, AES-256-GCM).
+  The private-key operation is protected by Secure Enclave and the currently
+  enrolled fingerprints. Touch ID is enforced cryptographically, not by an
+  advisory prompt. There is no password fallback or `SEC_SKIP_BIOMETRY` bypass.
+- Only ciphertext and an encrypted, device-bound key representation are saved
+  in the local Keychain. Secret names remain visible. Nothing syncs through
+  iCloud, and copying these entries to another Mac cannot unlock them there.
+- **Keep recovery copies in your password manager.** Adding or removing a
+  fingerprint, losing the stored key, or erasing/replacing the Mac can make
+  credentials unrecoverable. Before changing fingerprints, retain the original
+  credentials so you can initialize fresh storage and import them again.
+- Once approved, plaintext exists in process memory and the child's environment.
+  Only run commands you trust. This does not sandbox the child, prevent another
+  application from requesting biometric approval, or protect a compromised OS.
+
+If the key is permanently unusable, recover your credentials from their original
+source. To start over, remove the encrypted entries with `sec rm`, delete the
+`default` entry with service `sec.enclave-key.v1` in Keychain Access, then run
+`sec init` and re-import. This discards the old encrypted storage; it does not
+recover it.
+
+## Upgrading from the older Keychain backend
+
+Old entries are not silently read or converted:
 
 ```sh
-sec run TOKEN=api-token -- ./deploy.sh
+sec init
+sec list
+sec migrate api-token api-secret
 ```
 
-Environment variable names must match `[A-Za-z_][A-Za-z0-9_]*`. Use an explicit
-alias for a secret whose derived name does not meet that rule. Secret names
-cannot be empty, and each variable may appear only once in a `run` command.
-For example, `api-key` and `api_key` need distinct aliases when used together.
-
-Pass several secrets at once:
-
-```sh
-sec run api-token api-secret -- ./publish.sh
-```
-
-Other commands:
-
-```sh
-sec list              # names and their variable names, never values
-sec rm api-token
-```
-
-## Authentication
-
-`sec run` authenticates you before it releases a secret. Touch ID handles this
-when it can, and the login password serves as the fallback.
-
-This gate is **advisory**. The Keychain item is a standard generic password and
-is not cryptographically bound to biometry. The prompt proves that a human
-approved the read. It does not stop another process running as the same user
-from reading the item directly with the Security framework.
-
-That is a deliberate trade. An advisory gate needs no stable code signing
-identity, no entitlements, and no Apple Developer account. See "Access models"
-below for the stronger designs and what each one costs.
-
-Set `SEC_SKIP_BIOMETRY=1` to bypass the prompt for scripts and CI.
-
-### Why not biometrics only
-
-`sec` requests `LAPolicy.deviceOwnerAuthentication` rather than
-`.deviceOwnerAuthenticationWithBiometrics`.
-
-The biometrics-only policy does not work from a command line tool. On macOS 27
-`canEvaluatePolicy` rejects it with `LAError.systemCancel` (code -4), even
-though `biometryType` correctly reports Touch ID hardware, the session is Aqua,
-and `bioutil -r` shows an enrolled and active fingerprint. A process with no
-foreground GUI context has nowhere to host the biometric dialog.
-
-Device owner authentication succeeds under the same conditions. It still uses
-Touch ID, so the day to day experience is a fingerprint prompt, and it degrades
-to the login password instead of failing outright.
-
-`LocalAuthentication` needs a GUI session either way. Neither policy works over
-SSH or on a headless machine.
-
-### Bundle identity
-
-`LocalAuthentication` will not present a dialog to a process that has no bundle
-identifier and no code signature. There is no `.app` bundle here, so the
-`Makefile` embeds `Info.plist` into the Mach-O at link time and signs the
-result. Removing either step breaks the prompt.
-
-Do not set `LSBackgroundOnly` in that `Info.plist`. It declares that the process
-cannot present UI. Use `LSUIElement`, which permits a dialog while keeping the
-tool out of the Dock.
-
-## Access models
-
-A Touch ID prompt can mean two different things. Confusing them leads to bad
-design decisions, so this section separates them.
-
-**Biometry as authorization.** The prompt proves a human is present, then the
-data is released. The decryption key exists independently of your fingerprint.
-Something else must stop an attacker from walking around the prompt.
-
-**Biometry as part of the seal.** The key lives in the Secure Enclave, cannot be
-exported by any mechanism, and the Enclave refuses to use it without a matching
-fingerprint. There is no way around it. The bytes are unrecoverable without that
-chip and that finger.
-
-Apple Passwords uses the first kind. That is precisely why iCloud Keychain can
-sync your passwords between devices while still asking for Touch ID. The items
-are not hardware bound. What protects them is the keychain access group, which
-stops code outside Apple's entitlements from querying them at all.
-
-So the real trade is not "strong or portable". It is this:
-
-| Model | Syncs | Enforced against local code | Cost |
-| --- | --- | --- | --- |
-| Advisory (current `sec`) | No | No | Free |
-| Access group | When enabled | Yes, per team | Apple Developer Team ID |
-| Secure Enclave | Never | Yes, by hardware | Free, self-signed |
-
-`sec` ships the advisory model today. It does not enable
-`kSecAttrSynchronizable`, so stored secrets stay on this Mac and do not sync
-through iCloud Keychain. The access group and Secure Enclave designs below are
-alternatives, not implemented features.
-
-Sync and hardware sealing are mutually exclusive. Only the access group model
-gives both sync and enforcement, and it is the only model that costs money.
-
-### Advisory
-
-A standard generic password in the local login keychain, with no iCloud
-synchronization. The Touch ID prompt is a presence check. Any process running as
-you can read the item directly through the Security framework. The protection
-against transcript leaks comes from the tool never printing a value, not from
-the Keychain.
-
-### Rejected: legacy keychain ACLs
-
-The file based keychain supports a per-item access control list naming the
-binaries allowed to use an item, through `SecAccessCreate` and
-`SecTrustedApplicationCreateFromPath`. On paper this gives per-item enforcement
-with a self-signed certificate and no Team ID.
-
-It was tested and rejected on two grounds.
-
-Those APIs are deprecated. More importantly, they do not enforce reads. A test
-on macOS 27 created an item whose ACL trusted only `/usr/bin/true`, then read it
-from a different, untrusted, separately signed binary. The read succeeded and
-returned the secret with no prompt, even with `kSecUseAuthenticationUI` set to
-`kSecUseAuthenticationUIFail`, which converts any pending dialog into an error.
-
-The ACL was not inert. Deleting the item from an untrusted binary failed with
-"Invalid attempt to change the owner of this item". So the mechanism still
-governs ownership and modification. It does not govern reads, and reads are the
-operation that matters for a secret.
-
-Do not use this route.
-
-### Access group
-
-The data protection keychain scopes items to an access group derived from your
-Team ID. Only binaries signed by your team can query them. This is Apple's own
-model, and it is the only one that syncs *and* enforces.
-
-A Team ID is the specific thing an Apple Developer account buys here. A
-self-signed certificate cannot claim one, so this tier genuinely requires the
-paid membership.
-
-### Secure Enclave
-
-Generate a P-256 key in the Enclave with access control
-`[.privateKeyUsage, .biometryCurrentSet]`. Encrypt the secret to its public key
-and store only the ciphertext, which can sit in a world readable file without
-risk. Decryption needs the Enclave key, and using that key needs your
-fingerprint.
-
-Strongest available without an Apple account. It can never sync: Enclave keys
-are non-exportable by design, so ciphertext copied to another Mac is permanently
-undecryptable there.
-
-### Signing identity
-
-Every model above the advisory tier needs a *stable* code signing identity.
-Ad-hoc signing derives the identity from the binary contents, so it changes on
-every rebuild and orphans anything bound to the previous identity. Create a
-self-signed code signing certificate in Keychain Access and build with
-`make SIGN_IDENTITY="your-cert-name"`.
-
-Signing runs on every build or install, even when the executable is already up
-to date. Use `make sign SIGN_IDENTITY="your-cert-name"` to re-sign it explicitly.
-A signing failure stops installation.
-
-### Choosing
-
-If the goal is keeping secrets out of agent transcripts and CI logs, the
-advisory model avoids printing values during retrieval. The command receiving
-the secret must also handle it without exposing it in output or arguments.
-
-Choose a stronger model when the threat is other code running as your user.
-Note that a hardware sealed gate has no bypass: Touch ID does not work over SSH
-or on a headless machine.
-
-## Limitations
-
-- macOS only. It depends on the Keychain and LocalAuthentication.
-- Local storage only. Secrets do not synchronize between Macs.
-- Secrets must be valid UTF-8 without NUL bytes. Invalid values are rejected
-  before storage and again when read for a command.
-- No caching. Every `sec run` prompts. There is no `sudo`-style timeout, because
-  a `LAContext` reuse window cannot span separate processes.
-- An advisory gate is not a security boundary against code running as you.
+Migration encrypts and verifies each copy without overwriting a conflicting
+encrypted entry. **The old copies remain unprotected by Touch ID.** After testing
+your commands, remove their entries with service **`sec`** in Keychain Access.
+Do not remove **`sec.enclave-key.v1`** (your encryption key) or
+**`sec.encrypted.v1`** (your encrypted credentials). `sec list` flags remaining
+legacy copies; `sec rm` only removes encrypted entries.
 
 ## Development
 
-Run `make test` with Python 3 and the Xcode Command Line Tools installed.
-The CLI regression tests use an in-memory Keychain stub. Build tests compile,
-sign, and install into temporary directories and verify the installed signature.
+```sh
+make test
+```
 
-## Licence
+Automated tests use isolated storage and a test-only software key with the same
+HPKE implementation; they never read your credentials or request Touch ID.
+Hardware authentication must also be tested on a compatible Mac before release.
 
-MIT
+MIT licensed. See [LICENSE](LICENSE).

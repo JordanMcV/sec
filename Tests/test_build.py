@@ -34,6 +34,12 @@ class BuildTests(unittest.TestCase):
                                    check=True, capture_output=True, text=True)
         self.assertIn("Sealed Resources=none", signature.stderr)
         self.assertIn("Identifier=dev.jordanmcv.sec", signature.stderr)
+        load_commands = subprocess.run(["otool", "-l", str(binary)],
+                                       check=True, capture_output=True, text=True)
+        self.assertRegex(load_commands.stdout, r"minos 14\.0\b")
+        strings = subprocess.run(["strings", str(binary)], check=True, capture_output=True, text=True)
+        self.assertNotIn("TEST_STATE", strings.stdout)
+        self.assertNotIn("TEST_DENY", strings.stdout)
         subprocess.run([str(binary), "--help"], check=True, capture_output=True)
 
     def test_changed_identity_is_honored_and_failure_blocks_install(self):
